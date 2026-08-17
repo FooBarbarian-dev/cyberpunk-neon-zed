@@ -1,7 +1,7 @@
 id = "cyberpunk-neon"
 name = "Cyberpunk Neon"
-description = "Cyberpunk Neon for Zed: a high-contrast neon-on-navy dark theme family, ported from Roboron3042/Cyberpunk-Neon. Ships a translucent and a fully opaque variant."
-version = "0.1.0"
+description = "Cyberpunk Neon for Zed: a high-contrast neon-on-navy dark theme family, ported from Roboron3042/Cyberpunk-Neon. Ships a fully opaque variant and a genuinely transparent one."
+version = "0.2.0"
 schema_version = 1
 authors = ["FooBarbarian-dev"]
 repository = "https://github.com/FooBarbarian-dev/cyberpunk-neon-zed"
