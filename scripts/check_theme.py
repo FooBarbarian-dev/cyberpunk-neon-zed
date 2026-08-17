@@ -11,7 +11,27 @@ Checks
   (b) Alpha policy: no alpha-bearing hex outside the allowlist in the translucent
       variant, and none at all in the Solid variant.
   (c) Contrast floors, WCAG relative luminance, RGBA composited over the backdrop.
+      Where the backdrop is itself translucent -- the window surfaces of the
+      translucent variant are -- it is first composited over a reference desktop.
   (d) The two variants are identical on every non-allowlisted key.
+  (e) Window translucency: each variant declares the window_background_appearance
+      it means, and the translucent variant's window surfaces are the Solid
+      variant's colors plus alpha, never a different color.
+
+Window translucency
+-------------------
+`window_background_appearance` is what actually makes a Zed window see-through;
+gpui defaults it to Opaque (crates/gpui/src/platform.rs, WindowBackgroundAppearance)
+and its docstring is explicit that under Opaque "themes should define a fully
+opaque background color instead". Alpha on `element.hover` and friends composites
+against an opaque window and is invisible from outside it, so a theme that sets
+alpha WITHOUT setting window_background_appearance is not translucent at all --
+it just spells its colors the long way. Both must be present, which is what (e)
+enforces.
+
+Only surfaces that sit directly against the desktop take alpha. `elevated_surface.
+background`, `panel.overlay_background` and `element.background` float above window
+content, so alpha there shows code through menus rather than showing the desktop.
 
 Why these keys and these floors --- verified against zed-industries/zed@main:
 
@@ -56,9 +76,34 @@ SOLID_VARIANT = "Cyberpunk Neon Solid"
 
 # --------------------------------------------------------------------------- policy
 
+# Surfaces that sit directly against the desktop, and so carry the window alpha in
+# the translucent variant. Anything that floats above window content is absent on
+# purpose -- see the module docstring.
+WINDOW_SURFACES = {
+    "background",
+    "editor.background",
+    "editor.gutter.background",
+    "editor.subheader.background",
+    "panel.background",
+    "status_bar.background",
+    "surface.background",
+    "tab.active_background",
+    "tab.inactive_background",
+    "tab_bar.background",
+    "terminal.ansi.background",
+    "terminal.background",
+    "title_bar.background",
+    "title_bar.inactive_background",
+    "toolbar.background",
+}
+
+# What each variant must declare. A variant claiming translucency without this is
+# just an opaque theme with a longer spelling.
+WINDOW_APPEARANCE = {"Cyberpunk Neon": "blurred", "Cyberpunk Neon Solid": "opaque"}
+
 # Keys permitted to carry alpha in the translucent variant. `ghost_element.*` and
 # `scrollbar.track.*` expand to their concrete members.
-ALPHA_ALLOWLIST = {
+ALPHA_ALLOWLIST = WINDOW_SURFACES | {
     "editor.active_line.background",
     "editor.highlighted_line.background",
     "editor.document_highlight.read_background",
@@ -101,6 +146,13 @@ ANSI_CONTRAST_EXEMPT = {
     "terminal.ansi.bright_black",   # #1c61c2  3.32:1
 }
 ANSI_DIM_EXEMPT_PREFIX = "terminal.ansi.dim_"   # the "dim" slot is dim by definition
+
+# Reference desktops a translucent surface is measured over. A theme cannot
+# guarantee contrast against an arbitrary wallpaper, so the floors are enforced
+# against a dark desktop -- the case a dark theme is chosen for -- and the lighter
+# desktops are reported as advisories rather than failures.
+DESKTOP_ENFORCED = [("dark desktop", "#000000")]
+DESKTOP_ADVISORY = [("mid-gray desktop", "#808080"), ("light desktop", "#ffffff")]
 
 TEXT_FLOOR = 4.5
 DIM_FLOOR = 3.0
@@ -213,9 +265,13 @@ class Report:
     def __init__(self):
         self.failures = []
         self.notes = []
+        self.advisories = []
 
     def fail(self, section, message):
         self.failures.append((section, message))
+
+    def advise(self, desktop, what, value, ratio, floor):
+        self.advisories.append((desktop, what, value, ratio, floor))
 
     def note(self, message):
         self.notes.append(message)
@@ -244,6 +300,24 @@ def iter_colors(style):
 def normalize(key):
     """players[3].selection -> players[].selection"""
     return re.sub(r"\[\d+\]", "[]", key)
+
+
+def backdrops(style, key):
+    """Concrete opaque backdrops to measure `key` against.
+
+    Yields (desktop, description, opaque_hex, enforced). An opaque surface is one
+    backdrop with no desktop behind it to qualify. A translucent one is whatever
+    the desktop happens to be, so it becomes several: the enforced dark case,
+    then the advisory lighter ones.
+    """
+    value = style[key]
+    if not has_alpha(value):
+        return [(None, key, value, True)]
+    alpha = parse_hex(value)[3]
+    return [(label, "%s over %s" % (key, label), blend_over(value, alpha, desk), enforced)
+            for label, desk, enforced in
+            [(l, d, True) for l, d in DESKTOP_ENFORCED] +
+            [(l, d, False) for l, d in DESKTOP_ADVISORY]]
 
 
 # --------------------------------------------------------------------------- checks
@@ -348,6 +422,18 @@ def check_contrast(themes, report):
         def resolve(k):
             return style[k]
 
+        def measure(what, fg, backdrop_key, floor):
+            """Check `fg` against every concrete form of `backdrop_key`."""
+            for desktop, description, opaque_bg, enforced in backdrops(style, backdrop_key):
+                ratio = contrast(fg, opaque_bg)
+                if ratio >= floor:
+                    continue
+                if enforced:
+                    report.fail("contrast", "%s: %s is %.2f:1 against %s (%s), floor is %.1f:1"
+                                % (name, what, ratio, description, opaque_bg, floor))
+                else:
+                    report.advise(desktop, what, fg, ratio, floor)
+
         for key, value in iter_colors(style):
             norm = normalize(key)
             floor = None
@@ -395,27 +481,61 @@ def check_contrast(themes, report):
             if floor is None:
                 continue
 
-            ratio = contrast(value, resolve(backdrop))
-            if ratio < floor:
-                report.fail("contrast", "%s: %s = %s is %.2f:1 against %s, floor is %.1f:1"
-                            % (name, key, value, ratio, backdrop, floor))
+            measure("%s = %s" % (key, value), value, backdrop, floor)
 
         # `text` lands on every surface, not just the editor canvas.
         text = resolve("text")
         for surface in TEXT_SURFACES:
-            ratio = contrast(text, resolve(surface))
-            if ratio < TEXT_FLOOR:
-                report.fail("contrast", "%s: text = %s is %.2f:1 against %s, floor is %.1f:1"
-                            % (name, text, ratio, surface, TEXT_FLOOR))
+            measure("text = %s" % text, text, surface, TEXT_FLOOR)
 
         # Inline code in the preview: text over editor.foreground @ 8% (markdown.rs:283,:341).
         for base in ("editor.background", "title_bar.background"):
-            span_bg = blend_over(resolve("editor.foreground"), 0.08, resolve(base))
-            ratio = contrast(text, span_bg)
-            if ratio < TEXT_FLOOR:
-                report.fail("contrast", "%s: inline code (text over editor.foreground@8%% on "
-                                        "%s = %s) is %.2f:1, floor is %.1f:1"
-                            % (name, base, span_bg, ratio, TEXT_FLOOR))
+            for desktop, _description, opaque_bg, enforced in backdrops(style, base):
+                span_bg = blend_over(resolve("editor.foreground"), 0.08, opaque_bg)
+                ratio = contrast(text, span_bg)
+                if ratio >= TEXT_FLOOR:
+                    continue
+                what = "inline code on %s" % base
+                if enforced:
+                    report.fail("contrast", "%s: %s (%s) is %.2f:1, floor is %.1f:1"
+                                % (name, what, span_bg, ratio, TEXT_FLOOR))
+                else:
+                    report.advise(desktop, what, text, ratio, TEXT_FLOOR)
+
+
+def check_translucency(themes, report):
+    """The translucent variant must actually be translucent, and the two variants
+    must differ only in that -- same palette, one of them wearing alpha."""
+    for name, style in themes.items():
+        declared = style.get("window_background_appearance")
+        expected = WINDOW_APPEARANCE[name]
+        if declared is None:
+            report.fail("translucency",
+                        "%s does not set window_background_appearance, so Zed defaults it to "
+                        "'opaque' and the window is not see-through no matter what alpha the "
+                        "surfaces carry; expected %r" % (name, expected))
+        elif declared != expected:
+            report.fail("translucency", "%s declares window_background_appearance %r, expected %r"
+                        % (name, declared, expected))
+
+    translucent, solid = themes[TRANSLUCENT_VARIANT], themes[SOLID_VARIANT]
+    for key in sorted(WINDOW_SURFACES):
+        got, base = translucent[key], solid[key]
+        if not has_alpha(got):
+            report.fail("translucency", "%s: %s = %s is a window surface but carries no alpha, "
+                                        "so the desktop cannot show through it"
+                        % (TRANSLUCENT_VARIANT, key, got))
+            continue
+        if got[:7].lower() != base.lower():
+            report.fail("translucency", "%s: %s = %s is not %s plus alpha; the two variants must "
+                                        "be one palette, differing only in opacity"
+                        % (TRANSLUCENT_VARIANT, key, got, base))
+
+    alphas = {translucent[k][7:].lower() for k in WINDOW_SURFACES if has_alpha(translucent[k])}
+    if len(alphas) > 1:
+        report.fail("translucency", "window surfaces use %d different alpha values (%s); they "
+                                    "should share one so the window reads as a single pane"
+                    % (len(alphas), ", ".join(sorted(alphas))))
 
 
 def check_variants_identical(themes, report):
@@ -467,8 +587,16 @@ def main():
     print("  variants: %s" % ", ".join(sorted(themes)))
     check_schema(doc, args.theme, args.schema, args.offline, report)
     check_alpha(themes, report)
+    check_translucency(themes, report)
     check_contrast(themes, report)
     check_variants_identical(themes, report)
+
+    tr = themes[TRANSLUCENT_VARIANT]
+    alpha = parse_hex(tr["background"])[3]
+    print("  window: %s is %r at %d%% opacity on %d surfaces; %s is %r"
+          % (TRANSLUCENT_VARIANT, tr.get("window_background_appearance"),
+             round(alpha * 100), len(WINDOW_SURFACES), SOLID_VARIANT,
+             themes[SOLID_VARIANT].get("window_background_appearance")))
 
     # Exemptions are never silent.
     print("  exempt from the %.1f:1 text floor (verbatim upstream ANSI, %d slots):"
@@ -486,12 +614,33 @@ def main():
     print("  border.variant is NOT alpha-allowlisted: it strokes Mermaid cluster/note")
     print("      borders, the fenced-code-block border and the h1/h2 underline.")
 
+    if report.advisories:
+        print()
+        print("  translucency advisories -- %s lets the desktop through, and no theme can"
+              % TRANSLUCENT_VARIANT)
+        print("  guarantee contrast against an arbitrary wallpaper. Every floor holds over a")
+        print("  dark desktop; over lighter ones these colors fall short. Grouped by color,")
+        print("  since one palette entry is reused across many keys:")
+        for desktop, _ in DESKTOP_ADVISORY:
+            hits = [a for a in report.advisories if a[0] == desktop]
+            if not hits:
+                continue
+            worst = {}
+            for _, what, value, ratio, floor in hits:
+                if value not in worst or ratio < worst[value][0]:
+                    worst[value] = (ratio, floor, what)
+            print("      %s: %d color(s) across %d key(s)" % (desktop, len(worst), len(hits)))
+            for value, (ratio, floor, what) in sorted(worst.items(), key=lambda kv: kv[1][0]):
+                print("          %-9s %.2f:1 (floor %.1f)  e.g. %s"
+                      % (value, ratio, floor, what))
+        print("      Use %s, or a dark wallpaper, if this matters to you." % SOLID_VARIANT)
+
     if report.failures:
         print()
         by_section = {}
         for section, message in report.failures:
             by_section.setdefault(section, []).append(message)
-        for section in ("schema", "alpha", "contrast", "variants"):
+        for section in ("schema", "alpha", "translucency", "contrast", "variants"):
             for message in by_section.get(section, []):
                 print("FAIL [%s] %s" % (section, message))
         print("\n%d failure(s)" % len(report.failures))
@@ -500,7 +649,8 @@ def main():
     print()
     for note in report.notes:
         print("NOTE: %s" % note)
-    print("OK: schema, alpha policy, contrast floors and variant parity all pass.")
+    print("OK: schema, alpha policy, window translucency, contrast floors and variant "
+          "parity all pass.")
     return 0
 
 

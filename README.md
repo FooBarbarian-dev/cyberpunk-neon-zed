@@ -5,10 +5,27 @@ A Zed theme extension porting [Roboron3042/Cyberpunk-Neon](https://github.com/Ro
 
 The family ships two dark variants:
 
-| Variant                 | Notes                                                                                   |
-| ----------------------- | --------------------------------------------------------------------------------------- |
-| `Cyberpunk Neon`        | Uses alpha on selections, hovers and scrollbars so layered surfaces read as translucent. |
-| `Cyberpunk Neon Solid`  | Every color is fully opaque. Identical palette; pick this if translucency looks muddy on your display, or if you use a compositor/terminal that handles blended surfaces poorly. |
+| Variant                | Notes                                                                                                                                            |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `Cyberpunk Neon`       | `window_background_appearance: "blurred"`, window surfaces at 85% — the desktop shows through the editor, panels, tabs, terminal and title bar.  |
+| `Cyberpunk Neon Solid` | `window_background_appearance: "opaque"`, every color fully opaque. Same palette, no see-through.                                                |
+
+### Tuning the translucency
+
+Both variants share one palette; the translucent one is that palette with an
+alpha suffix on the 15 surfaces that sit against the desktop. To change the
+strength, edit the last two hex digits of those surfaces in
+`themes/cyberpunk-neon.json` — `d9` is 85%, `bf` is 75%, `f2` is 95% — then
+re-run the checker, which enforces that they all share one alpha value.
+
+Surfaces that float *above* window content — `elevated_surface.background`
+(popovers, the completion menu), `panel.overlay_background`,
+`element.background` — deliberately stay opaque. Alpha there shows your code
+through menus rather than showing the desktop.
+
+`blurred` is documented in gpui as "not always supported"; where the platform
+or compositor can't do it, use `"transparent"` for plain alpha, or
+`"opaque"`/the Solid variant to turn the effect off.
 
 ## Installation
 
@@ -52,6 +69,11 @@ Solid variant), WCAG contrast floors, and parity between the two variants:
 pip install jsonschema
 python3 scripts/check_theme.py themes/cyberpunk-neon.json
 ```
+
+Contrast floors are enforced against a **dark desktop** — the case a dark theme
+is picked for. Because the translucent variant lets the wallpaper through, no
+theme can guarantee contrast against an arbitrary one, so shortfalls over
+lighter desktops are reported as grouped advisories rather than failures.
 
 Schema validation fetches `https://zed.dev/schema/themes/v0.2.0.json` and
 caches it under `scripts/.cache/`. Where that host is unreachable, pass a local
