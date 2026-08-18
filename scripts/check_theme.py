@@ -8,30 +8,65 @@ Usage:
 
 Checks
   (a) JSON Schema validation against the theme's own `$schema` URL.
-  (b) Alpha policy: no alpha-bearing hex outside the allowlist in the translucent
-      variant, and none at all in the Solid variant.
+  (b) Alpha policy: no alpha-bearing hex outside the allowlist in the Transparent
+      variant, and none at all in the opaque variant.
   (c) Contrast floors, WCAG relative luminance, RGBA composited over the backdrop.
-      Where the backdrop is itself translucent -- the window surfaces of the
-      translucent variant are -- it is first composited over a reference desktop.
-  (d) The two variants are identical on every non-allowlisted key.
-  (e) Window translucency: each variant declares the window_background_appearance
-      it means, and the translucent variant's window surfaces are the Solid
-      variant's colors plus alpha, never a different color.
+      In the Transparent variant the backdrop is a stack -- wallpaper, then the
+      window tint, then the surface -- so every floor is measured against the real
+      composite, over a black, a mid-gray and a white synthetic wallpaper.
+  (d) The two variants are identical except on the surface plan, the declared
+      color substitutions and `background.appearance`.
+  (e) Window transparency: each variant declares the `background.appearance` it
+      means, the Transparent variant follows the surface plan exactly, and the
+      editor and terminal regions composite to an opacity inside the band.
 
-Window translucency
+Window transparency
 -------------------
-`window_background_appearance` is what actually makes a Zed window see-through;
-gpui defaults it to Opaque (crates/gpui/src/platform.rs, WindowBackgroundAppearance)
-and its docstring is explicit that under Opaque "themes should define a fully
-opaque background color instead". Alpha on `element.hover` and friends composites
-against an opaque window and is invisible from outside it, so a theme that sets
-alpha WITHOUT setting window_background_appearance is not translucent at all --
-it just spells its colors the long way. Both must be present, which is what (e)
-enforces.
+`background.appearance` is what actually makes a Zed window see-through. Verified
+against zed-industries/zed@main:
 
-Only surfaces that sit directly against the desktop take alpha. `elevated_surface.
-background`, `panel.overlay_background` and `element.background` float above window
-content, so alpha there shows code through menus rather than showing the desktop.
+  crates/settings_content/src/theme.rs:538-539
+      #[serde(rename = "background.appearance")]
+      pub <rust field>: Option<WindowBackgroundContent>,
+  crates/settings_content/src/theme.rs:1363-1371
+      #[serde(rename_all = "snake_case")]
+      pub enum WindowBackgroundContent { Opaque, Transparent, Blurred }
+  crates/theme/src/theme.rs:289-292 -> crates/gpui/src/window.rs:1411
+      the theme's value reaches platform_window.set_background_appearance()
+
+The Rust field behind that rename is spelled differently -- LEGACY_APPEARANCE_KEY
+below assembles it -- and a theme using the field name instead of the renamed JSON
+key is silently ignored: the theme schema tolerates unknown properties, so nothing
+complains and nothing happens. check_legacy_key() is a regression trap for exactly
+that mistake.
+
+gpui defaults the appearance to Opaque (crates/gpui/src/platform.rs:2069) and its
+docstring is explicit that under Opaque "themes should define a fully opaque
+background color instead", so alpha without the key is not transparency -- it just
+spells opaque colors the long way.
+
+Surface architecture
+--------------------
+Alpha does NOT stack well: `background` at 85% under `editor.background` at 85%
+composites to ~97.8% in the editor region, which is opacity with extra steps
+(zed-industries/zed#55972). So the Transparent variant is one tinted base pane
+with clear glass above it: `background` carries the whole navy tint, and the
+mid-surfaces that overlap it -- editor, gutter, tab bar, panels, terminal,
+toolbar, inactive tabs -- are `#00000000`. Structure that has to stay legible
+against the desktop (the active tab, the status and title bars, the sticky
+header) carries a light tint. TRANSPARENT_SURFACE_PLAN is that architecture,
+enforced value by value rather than left to convention.
+
+Surfaces that float ABOVE window content -- `elevated_surface.background`,
+`panel.overlay_background`, `element.background` -- stay opaque in both variants.
+Alpha there shows code through menus rather than showing the desktop.
+
+Colors vs. the wallpaper
+------------------------
+Once the window is really transparent the effective background is `wallpaper (+)
+tint`, and floors that held against `#000b1e` collapse over a bright wallpaper.
+TRANSPARENT_SUBSTITUTIONS is the declared, bounded answer: a handful of same-hue
+color swaps that apply only to the Transparent variant. Everything else is shared.
 
 Why these keys and these floors --- verified against zed-industries/zed@main:
 
@@ -55,13 +90,15 @@ Why these keys and these floors --- verified against zed-industries/zed@main:
 
 `border` therefore paints table pipes, the blockquote bar, the horizontal rule and
 every flowchart arrowhead; `border.variant` paints cluster, note and code-block
-strokes. Neither may carry alpha, which is why border.variant is NOT allowlisted
-here even though the original brief listed it.
+strokes. Neither may carry alpha in either variant, which is why border.variant is
+NOT alpha-allowlisted even though the original brief listed it -- it is instead
+brightened by substitution so it survives a bright wallpaper.
 """
 
 from __future__ import annotations
 
 import argparse
+import colorsys
 import json
 import os
 import re
@@ -71,39 +108,82 @@ import urllib.request
 HERE = os.path.dirname(os.path.abspath(__file__))
 CACHE_DIR = os.path.join(HERE, ".cache")
 
-TRANSLUCENT_VARIANT = "Cyberpunk Neon"
-SOLID_VARIANT = "Cyberpunk Neon Solid"
+OPAQUE_VARIANT = "Cyberpunk Neon"
+TRANSPARENT_VARIANT = "Cyberpunk Neon Transparent"
 
 # --------------------------------------------------------------------------- policy
 
-# Surfaces that sit directly against the desktop, and so carry the window alpha in
-# the translucent variant. Anything that floats above window content is absent on
-# purpose -- see the module docstring.
-WINDOW_SURFACES = {
-    "background",
-    "editor.background",
-    "editor.gutter.background",
-    "editor.subheader.background",
-    "panel.background",
-    "status_bar.background",
-    "surface.background",
-    "tab.active_background",
-    "tab.inactive_background",
-    "tab_bar.background",
-    "terminal.ansi.background",
-    "terminal.background",
-    "title_bar.background",
-    "title_bar.inactive_background",
-    "toolbar.background",
+# The JSON key Zed actually reads, and the Rust field name that is NOT it. The
+# wrong spelling is assembled rather than written out, so that a repo-wide grep for
+# it keeps returning nothing -- this line is the only place it would survive.
+APPEARANCE_KEY = "background.appearance"
+LEGACY_APPEARANCE_KEY = "window_" + APPEARANCE_KEY.replace(".", "_")
+
+# What each variant must declare. A variant claiming transparency without this is
+# just an opaque theme with a longer spelling.
+BACKGROUND_APPEARANCE = {
+    OPAQUE_VARIANT: "opaque",
+    TRANSPARENT_VARIANT: "transparent",
 }
 
-# What each variant must declare. A variant claiming translucency without this is
-# just an opaque theme with a longer spelling.
-WINDOW_APPEARANCE = {"Cyberpunk Neon": "blurred", "Cyberpunk Neon Solid": "opaque"}
+# The Transparent variant's surface architecture, value by value: one tinted base
+# pane, clear glass over it, a light tint on the structure that has to stay
+# readable against the desktop. See the module docstring.
+TRANSPARENT_SURFACE_PLAN = {
+    # the one tinted pane -- the whole window's transparency lives here
+    "background": "#000b1ed9",
+    # clear glass: everything that overlaps the base pane
+    "editor.background": "#00000000",
+    "editor.gutter.background": "#00000000",
+    "panel.background": "#00000000",
+    "surface.background": "#00000000",
+    "tab.inactive_background": "#00000000",
+    "tab_bar.background": "#00000000",
+    "terminal.ansi.background": "#00000000",
+    "terminal.background": "#00000000",
+    "toolbar.background": "#00000000",
+    # structure: a light tint so these read as chrome and not as wallpaper
+    "editor.subheader.background": "#0918334d",
+    "status_bar.background": "#0918334d",
+    "tab.active_background": "#0918334d",
+    "title_bar.background": "#0918334d",
+    "title_bar.inactive_background": "#0614284d",
+}
 
-# Keys permitted to carry alpha in the translucent variant. `ghost_element.*` and
-# `scrollbar.track.*` expand to their concrete members.
-ALPHA_ALLOWLIST = WINDOW_SURFACES | {
+# Regions whose composite opacity is what a user actually perceives as "how
+# transparent is this theme". Each is (region label, surface key): the surface
+# composites over `background`, which composites over the desktop.
+COMPOSITE_REGIONS = [("editor", "editor.background"), ("terminal", "terminal.background")]
+
+# Below the floor text drowns in the wallpaper; above the ceiling the transparency
+# is not worth shipping.
+COMPOSITE_BAND = (0.72, 0.90)
+
+# Color-only, same-hue swaps that apply to the Transparent variant alone, because
+# the effective background there is `wallpaper (+) tint` rather than `#000b1e`.
+# key -> (opaque variant color, Transparent variant color). Bounded on purpose:
+# every entry is a divergence between the variants that has to be maintained.
+TRANSPARENT_SUBSTITUTIONS = {
+    # 2.08:1 -> 4.11:1 over a white wallpaper. #005faf is legible on deep navy and
+    # nowhere near legible on a bright desktop.
+    "syntax.comment": ("#005faf", "#5c93c4"),
+    "syntax.comment.doc": ("#005faf", "#5c93c4"),
+    # table pipes, blockquote bar, horizontal rule, Mermaid flowchart arrowheads:
+    # 3.08:1 -> 4.74:1 over white.
+    "border": ("#2b77e0", "#4a9fe8"),
+    # Mermaid cluster/note strokes, fenced-code border, heading underline:
+    # 2.26:1 -> 3.08:1 over white, and still subordinate to `border`.
+    "border.variant": ("#1c61c2", "#2b77e0"),
+    # whitespace markers, same 2.26:1 -> 3.08:1.
+    "editor.invisible": ("#1c61c2", "#2b77e0"),
+}
+MAX_SUBSTITUTIONS = 6
+MAX_HUE_DRIFT_DEGREES = 20.0
+
+# Keys permitted to carry alpha in the Transparent variant. The surface plan, plus
+# the overlays that tint window content (hover, selection, search match). Overlays
+# float above the pane, so their alpha reads against the code, not the desktop.
+ALPHA_ALLOWLIST = set(TRANSPARENT_SURFACE_PLAN) | {
     "editor.active_line.background",
     "editor.highlighted_line.background",
     "editor.document_highlight.read_background",
@@ -147,12 +227,9 @@ ANSI_CONTRAST_EXEMPT = {
 }
 ANSI_DIM_EXEMPT_PREFIX = "terminal.ansi.dim_"   # the "dim" slot is dim by definition
 
-# Reference desktops a translucent surface is measured over. A theme cannot
-# guarantee contrast against an arbitrary wallpaper, so the floors are enforced
-# against a dark desktop -- the case a dark theme is chosen for -- and the lighter
-# desktops are reported as advisories rather than failures.
-DESKTOP_ENFORCED = [("dark desktop", "#000000")]
-DESKTOP_ADVISORY = [("mid-gray desktop", "#808080"), ("light desktop", "#ffffff")]
+# Synthetic wallpapers the Transparent variant is measured over. A real desktop is
+# somewhere between these; the two extremes plus the midpoint bracket it.
+WALLPAPERS = [("black", "#000000"), ("mid-gray", "#808080"), ("white", "#ffffff")]
 
 TEXT_FLOOR = 4.5
 DIM_FLOOR = 3.0
@@ -162,6 +239,10 @@ ANSI_FLOOR = 1.8        # exempt slots must still not be literally invisible
 # is the whole point. It is instead held to a relation: strictly darker than the
 # slot it dims, and still distinguishable from the terminal canvas.
 ANSI_DIM_FLOOR = 1.25
+
+# Over a non-black wallpaper no dark theme can hold 4.5:1 -- the backdrop is half
+# the desktop. Every floor is capped here instead, comments included.
+WALLPAPER_FLOOR = 3.0
 
 # Glyph-painting keys: draw a character or an icon fill. Opaque in BOTH variants.
 TEXT_KEYS = {
@@ -224,6 +305,10 @@ def has_alpha(value):
     return len(value.lstrip("#")) in (4, 8)
 
 
+def alpha_of(value):
+    return parse_hex(value)[3]
+
+
 def composite(fg, bg):
     """Composite an RGBA tuple over an opaque RGB backdrop."""
     fr, fg_, fb, fa = fg
@@ -250,6 +335,12 @@ def contrast(fg_hex, bg_hex):
     return (hi + 0.05) / (lo + 0.05)
 
 
+def flatten(fg_hex, bg_hex):
+    """src-over `fg_hex` onto the opaque `bg_hex`, returning an opaque 6-digit hex."""
+    fg = composite(parse_hex(fg_hex), parse_hex(bg_hex))
+    return "#%02x%02x%02x" % tuple(round(255 * c) for c in fg[:3])
+
+
 def blend_over(fg_hex, alpha, bg_hex):
     """Composite fg at `alpha` over bg, returning an opaque 6-digit hex."""
     fr, fg_, fb, _ = parse_hex(fg_hex)
@@ -259,19 +350,25 @@ def blend_over(fg_hex, alpha, bg_hex):
         for f, b in ((fr, br), (fg_, bg_), (fb, bb)))
 
 
+def hue_degrees(hex_value):
+    r, g, b, _ = parse_hex(hex_value)
+    return colorsys.rgb_to_hsv(r, g, b)[0] * 360.0
+
+
+def hue_distance(a_hex, b_hex):
+    delta = abs(hue_degrees(a_hex) - hue_degrees(b_hex)) % 360.0
+    return min(delta, 360.0 - delta)
+
+
 # --------------------------------------------------------------------------- reporting
 
 class Report:
     def __init__(self):
         self.failures = []
         self.notes = []
-        self.advisories = []
 
     def fail(self, section, message):
         self.failures.append((section, message))
-
-    def advise(self, desktop, what, value, ratio, floor):
-        self.advisories.append((desktop, what, value, ratio, floor))
 
     def note(self, message):
         self.notes.append(message)
@@ -302,22 +399,30 @@ def normalize(key):
     return re.sub(r"\[\d+\]", "[]", key)
 
 
-def backdrops(style, key):
-    """Concrete opaque backdrops to measure `key` against.
+def backdrops(name, style, key):
+    """Concrete opaque backdrops to measure a color against, on `key`'s surface.
 
-    Yields (desktop, description, opaque_hex, enforced). An opaque surface is one
-    backdrop with no desktop behind it to qualify. A translucent one is whatever
-    the desktop happens to be, so it becomes several: the enforced dark case,
-    then the advisory lighter ones.
+    Yields (wallpaper, description, opaque_hex, floor_cap). In the opaque variant a
+    surface is one backdrop and that is the end of it. In the Transparent variant a
+    surface that carries alpha is a stack -- wallpaper, then the window tint, then
+    the surface itself -- so it becomes one backdrop per synthetic wallpaper, and
+    the floors there are capped at WALLPAPER_FLOOR over anything but black.
     """
     value = style[key]
-    if not has_alpha(value):
-        return [(None, key, value, True)]
-    alpha = parse_hex(value)[3]
-    return [(label, "%s over %s" % (key, label), blend_over(value, alpha, desk), enforced)
-            for label, desk, enforced in
-            [(l, d, True) for l, d in DESKTOP_ENFORCED] +
-            [(l, d, False) for l, d in DESKTOP_ADVISORY]]
+    if name != TRANSPARENT_VARIANT or not has_alpha(value):
+        return [(None, key, value, None)]
+
+    layers = [] if key == "background" else [style["background"]]
+    layers.append(value)
+
+    out = []
+    for label, wallpaper in WALLPAPERS:
+        stacked = wallpaper
+        for layer in layers:
+            stacked = flatten(layer, stacked)
+        cap = None if label == "black" else WALLPAPER_FLOOR
+        out.append((label, "%s over a %s wallpaper" % (key, label), stacked, cap))
+    return out
 
 
 # --------------------------------------------------------------------------- checks
@@ -388,9 +493,22 @@ def check_schema(doc, path, schema_path, offline, report):
         print("  SCHEMA: ok (%s)" % source)
 
 
+def check_legacy_key(raw, report):
+    """Regression trap. LEGACY_APPEARANCE_KEY is the gpui Rust field name; Zed reads
+    `background.appearance` and silently ignores anything else."""
+    if LEGACY_APPEARANCE_KEY in raw:
+        line = next((i + 1 for i, l in enumerate(raw.splitlines())
+                     if LEGACY_APPEARANCE_KEY in l), 0)
+        report.fail("transparency",
+                    "the theme file contains %r (first at line %d). That is the gpui "
+                    "Rust field name, not the JSON key -- Zed reads %r and silently "
+                    "ignores the other spelling, so the window stays opaque."
+                    % (LEGACY_APPEARANCE_KEY, line, APPEARANCE_KEY))
+
+
 def check_alpha(themes, report):
     for name, style in themes.items():
-        solid = name == SOLID_VARIANT
+        opaque = name == OPAQUE_VARIANT
         for key, value in iter_colors(style):
             if not HEX_RE.match(value):
                 report.fail("alpha", "%s: %s = %r is not a valid Zed color "
@@ -405,8 +523,8 @@ def check_alpha(themes, report):
                     report.fail("alpha", "%s: %s is structurally transparent and must be "
                                          "exactly %s, got %s" % (name, key, expected, value))
                 continue
-            if solid:
-                report.fail("alpha", "%s: %s = %s carries alpha; the Solid variant "
+            if opaque:
+                report.fail("alpha", "%s: %s = %s carries alpha; the opaque variant "
                                      "must be fully opaque" % (name, key, value))
             elif norm not in ALPHA_ALLOWLIST:
                 extra = ""
@@ -419,24 +537,28 @@ def check_alpha(themes, report):
 
 def check_contrast(themes, report):
     for name, style in themes.items():
-        def resolve(k):
-            return style[k]
+        def measure(what, fg, backdrop_key, floor, canvas_only=False):
+            """Check `fg` against every concrete form of `backdrop_key`.
 
-        def measure(what, fg, backdrop_key, floor):
-            """Check `fg` against every concrete form of `backdrop_key`."""
-            for desktop, description, opaque_bg, enforced in backdrops(style, backdrop_key):
-                ratio = contrast(fg, opaque_bg)
-                if ratio >= floor:
+            `canvas_only` restricts the measurement to the theme's own canvas -- the
+            darkest wallpaper -- for slots that are already exempt from the
+            readability floors. Their residual check only asserts they are not
+            invisible against the palette itself, which is not a claim about
+            anybody's desktop.
+            """
+            for wallpaper, description, opaque_bg, cap in backdrops(name, style, backdrop_key):
+                if canvas_only and wallpaper not in (None, "black"):
                     continue
-                if enforced:
+                effective = min(floor, cap) if cap is not None else floor
+                ratio = contrast(fg, opaque_bg)
+                if ratio < effective:
                     report.fail("contrast", "%s: %s is %.2f:1 against %s (%s), floor is %.1f:1"
-                                % (name, what, ratio, description, opaque_bg, floor))
-                else:
-                    report.advise(desktop, what, fg, ratio, floor)
+                                % (name, what, ratio, description, opaque_bg, effective))
 
         for key, value in iter_colors(style):
             norm = normalize(key)
             floor = None
+            canvas_only = False
 
             if norm.startswith("terminal.ansi."):
                 if norm == "terminal.ansi.background":
@@ -445,12 +567,8 @@ def check_contrast(themes, report):
                     # Relational rule: strictly darker than the slot it dims, and
                     # still distinguishable from the canvas.
                     base_key = "terminal.ansi." + norm[len(ANSI_DIM_EXEMPT_PREFIX):]
-                    canvas = resolve("terminal.background")
-                    ratio = contrast(value, canvas)
-                    if ratio < ANSI_DIM_FLOOR:
-                        report.fail("contrast", "%s: %s = %s is %.2f:1 against "
-                                    "terminal.background, dim floor is %.2f:1"
-                                    % (name, key, value, ratio, ANSI_DIM_FLOOR))
+                    measure("%s = %s" % (key, value), value, "terminal.background",
+                            ANSI_DIM_FLOOR, canvas_only=True)
                     if base_key in style:
                         base_lum = relative_luminance(parse_hex(style[base_key]))
                         if relative_luminance(parse_hex(value)) >= base_lum:
@@ -458,7 +576,7 @@ def check_contrast(themes, report):
                                         % (name, key, value, base_key, style[base_key]))
                     continue
                 if norm in ANSI_CONTRAST_EXEMPT:
-                    floor, backdrop = ANSI_FLOOR, "terminal.background"
+                    floor, backdrop, canvas_only = ANSI_FLOOR, "terminal.background", True
                 else:
                     floor, backdrop = TEXT_FLOOR, "terminal.background"
             elif norm.startswith("syntax."):
@@ -481,65 +599,124 @@ def check_contrast(themes, report):
             if floor is None:
                 continue
 
-            measure("%s = %s" % (key, value), value, backdrop, floor)
+            measure("%s = %s" % (key, value), value, backdrop, floor, canvas_only=canvas_only)
 
         # `text` lands on every surface, not just the editor canvas.
-        text = resolve("text")
+        text = style["text"]
         for surface in TEXT_SURFACES:
             measure("text = %s" % text, text, surface, TEXT_FLOOR)
 
         # Inline code in the preview: text over editor.foreground @ 8% (markdown.rs:283,:341).
         for base in ("editor.background", "title_bar.background"):
-            for desktop, _description, opaque_bg, enforced in backdrops(style, base):
-                span_bg = blend_over(resolve("editor.foreground"), 0.08, opaque_bg)
+            for _wallpaper, description, opaque_bg, cap in backdrops(name, style, base):
+                span_bg = blend_over(style["editor.foreground"], 0.08, opaque_bg)
+                floor = min(TEXT_FLOOR, cap) if cap is not None else TEXT_FLOOR
                 ratio = contrast(text, span_bg)
-                if ratio >= TEXT_FLOOR:
-                    continue
-                what = "inline code on %s" % base
-                if enforced:
-                    report.fail("contrast", "%s: %s (%s) is %.2f:1, floor is %.1f:1"
-                                % (name, what, span_bg, ratio, TEXT_FLOOR))
-                else:
-                    report.advise(desktop, what, text, ratio, TEXT_FLOOR)
+                if ratio < floor:
+                    report.fail("contrast", "%s: inline code on %s (%s) is %.2f:1, floor "
+                                            "is %.1f:1" % (name, description, span_bg, ratio, floor))
 
 
-def check_translucency(themes, report):
-    """The translucent variant must actually be translucent, and the two variants
-    must differ only in that -- same palette, one of them wearing alpha."""
+def check_transparency(themes, report):
+    """The Transparent variant must actually be transparent: the key Zed reads, the
+    surface architecture that makes stacked alpha behave, and a composite opacity
+    that is neither invisible nor pointless."""
     for name, style in themes.items():
-        declared = style.get("window_background_appearance")
-        expected = WINDOW_APPEARANCE[name]
+        declared = style.get(APPEARANCE_KEY)
+        expected = BACKGROUND_APPEARANCE[name]
         if declared is None:
-            report.fail("translucency",
-                        "%s does not set window_background_appearance, so Zed defaults it to "
-                        "'opaque' and the window is not see-through no matter what alpha the "
-                        "surfaces carry; expected %r" % (name, expected))
+            report.fail("transparency",
+                        "%s does not set %r, so Zed defaults it to 'opaque' and the window "
+                        "is not see-through no matter what alpha the surfaces carry; "
+                        "expected %r" % (name, APPEARANCE_KEY, expected))
         elif declared != expected:
-            report.fail("translucency", "%s declares window_background_appearance %r, expected %r"
-                        % (name, declared, expected))
+            report.fail("transparency", "%s declares %s %r, expected %r"
+                        % (name, APPEARANCE_KEY, declared, expected))
 
-    translucent, solid = themes[TRANSLUCENT_VARIANT], themes[SOLID_VARIANT]
-    for key in sorted(WINDOW_SURFACES):
-        got, base = translucent[key], solid[key]
-        if not has_alpha(got):
-            report.fail("translucency", "%s: %s = %s is a window surface but carries no alpha, "
-                                        "so the desktop cannot show through it"
-                        % (TRANSLUCENT_VARIANT, key, got))
+    transparent = themes[TRANSPARENT_VARIANT]
+
+    # (1) the surface plan, value by value.
+    for key in sorted(TRANSPARENT_SURFACE_PLAN):
+        expected = TRANSPARENT_SURFACE_PLAN[key]
+        got = transparent.get(key)
+        if got is None:
+            report.fail("transparency", "%s is missing surface %s, which the surface plan "
+                                        "sets to %s" % (TRANSPARENT_VARIANT, key, expected))
+        elif got.lower() != expected:
+            report.fail("transparency",
+                        "%s: %s = %s, surface plan says %s. Stacked alphas composite "
+                        "toward opaque, so only `background` carries the tint and the "
+                        "surfaces over it are clear." % (TRANSPARENT_VARIANT, key, got, expected))
+
+    # (2) the composite opacity of the regions a user actually looks through.
+    base_alpha = alpha_of(transparent["background"])
+    lo, hi = COMPOSITE_BAND
+    for region, surface_key in COMPOSITE_REGIONS:
+        surface_alpha = alpha_of(transparent[surface_key])
+        effective = 1 - (1 - base_alpha) * (1 - surface_alpha)
+        if not lo <= effective <= hi:
+            report.fail("transparency",
+                        "%s: the %s region composites to %.3f opacity (background %s over "
+                        "%s %s); the band is [%.2f, %.2f] -- below it text drowns in the "
+                        "wallpaper, above it the transparency is not worth shipping"
+                        % (TRANSPARENT_VARIANT, region, effective, transparent["background"],
+                           surface_key, transparent[surface_key], lo, hi))
+
+    # (3) glyph opacity is law: nothing that paints a character or a stroke may
+    # carry alpha, in either variant. (check_alpha covers the allowlist; this is
+    # the explicit statement of the rule for text and strokes.)
+    for name, style in themes.items():
+        for key, value in iter_colors(style):
+            norm = normalize(key)
+            paints_glyph = (norm in TEXT_KEYS or norm in DIM_KEYS or norm in STROKE_KEYS
+                            or norm.endswith("].cursor")
+                            or (norm.startswith("syntax.")
+                                and not norm.endswith(".background_color"))
+                            or (norm.startswith("terminal.ansi.")
+                                and norm != "terminal.ansi.background"))
+            if paints_glyph and has_alpha(value):
+                report.fail("transparency", "%s: %s = %s paints text or a stroke and must be "
+                                            "opaque 6-digit hex" % (name, key, value))
+
+
+def check_substitutions(themes, report):
+    """The declared color divergence between the variants -- bounded, same-hue, and
+    matching what the themes actually say."""
+    if len(TRANSPARENT_SUBSTITUTIONS) > MAX_SUBSTITUTIONS:
+        report.fail("variants", "TRANSPARENT_SUBSTITUTIONS has %d entries, the cap is %d"
+                    % (len(TRANSPARENT_SUBSTITUTIONS), MAX_SUBSTITUTIONS))
+
+    opaque = {normalize(k): v for k, v in iter_colors(themes[OPAQUE_VARIANT])}
+    transparent = {normalize(k): v for k, v in iter_colors(themes[TRANSPARENT_VARIANT])}
+
+    for key, (want_opaque, want_transparent) in sorted(TRANSPARENT_SUBSTITUTIONS.items()):
+        if key not in opaque:
+            report.fail("variants", "substitution %s names a key neither variant has" % key)
             continue
-        if got[:7].lower() != base.lower():
-            report.fail("translucency", "%s: %s = %s is not %s plus alpha; the two variants must "
-                                        "be one palette, differing only in opacity"
-                        % (TRANSLUCENT_VARIANT, key, got, base))
-
-    alphas = {translucent[k][7:].lower() for k in WINDOW_SURFACES if has_alpha(translucent[k])}
-    if len(alphas) > 1:
-        report.fail("translucency", "window surfaces use %d different alpha values (%s); they "
-                                    "should share one so the window reads as a single pane"
-                    % (len(alphas), ", ".join(sorted(alphas))))
+        if opaque[key].lower() != want_opaque:
+            report.fail("variants", "substitution %s expects %s in %s, theme says %s"
+                        % (key, want_opaque, OPAQUE_VARIANT, opaque[key]))
+        if transparent[key].lower() != want_transparent:
+            report.fail("variants", "substitution %s expects %s in %s, theme says %s"
+                        % (key, want_transparent, TRANSPARENT_VARIANT, transparent[key]))
+        if want_opaque == want_transparent:
+            report.fail("variants", "substitution %s substitutes nothing (%s -> %s)"
+                        % (key, want_opaque, want_transparent))
+        if has_alpha(want_transparent):
+            report.fail("variants", "substitution %s introduces alpha (%s); substitutions "
+                                    "are color-only" % (key, want_transparent))
+        drift = hue_distance(want_opaque, want_transparent)
+        if drift > MAX_HUE_DRIFT_DEGREES:
+            report.fail("variants", "substitution %s moves hue by %.0f deg (%s -> %s); the "
+                                    "cap is %.0f deg -- substitutions stay in the same hue "
+                                    "family" % (key, drift, want_opaque, want_transparent,
+                                                MAX_HUE_DRIFT_DEGREES))
 
 
 def check_variants_identical(themes, report):
-    a, b = themes[TRANSLUCENT_VARIANT], themes[SOLID_VARIANT]
+    """Parity: identical everywhere except the surface plan, the overlays that carry
+    alpha, the declared substitutions, and `background.appearance`."""
+    a, b = themes[OPAQUE_VARIANT], themes[TRANSPARENT_VARIANT]
     keys_a = {normalize(k): v for k, v in iter_colors(a)}
     keys_b = {normalize(k): v for k, v in iter_colors(b)}
 
@@ -548,11 +725,19 @@ def check_variants_identical(themes, report):
             report.fail("variants", "key %s is present in only one variant" % key)
         return
 
+    non_color_a = {k for k in a if not isinstance(a[k], str) or not a[k].startswith("#")}
+    non_color_b = {k for k in b if not isinstance(b[k], str) or not b[k].startswith("#")}
+    if non_color_a != non_color_b:
+        for key in sorted(non_color_a ^ non_color_b):
+            report.fail("variants", "non-color key %s is present in only one variant" % key)
+
+    may_differ = ALPHA_ALLOWLIST | set(TRANSPARENT_SUBSTITUTIONS)
     for key in sorted(keys_a):
-        if key in ALPHA_ALLOWLIST:
+        if key in may_differ:
             continue
         if keys_a[key] != keys_b[key]:
-            report.fail("variants", "non-allowlisted key %s differs: %s vs %s"
+            report.fail("variants", "key %s differs between the variants (%s vs %s) but is "
+                                    "neither alpha-allowlisted nor a declared substitution"
                         % (key, keys_a[key], keys_b[key]))
 
 
@@ -569,12 +754,17 @@ def main():
     args = ap.parse_args()
 
     with open(args.theme) as fh:
-        doc = json.load(fh)
+        raw = fh.read()
+    doc = json.loads(raw)
 
     themes = {t["name"]: t["style"] for t in doc.get("themes", [])}
-    missing = {TRANSLUCENT_VARIANT, SOLID_VARIANT} - set(themes)
+    missing = {OPAQUE_VARIANT, TRANSPARENT_VARIANT} - set(themes)
     if missing:
         print("FAIL: theme family is missing variant(s): %s" % ", ".join(sorted(missing)))
+        return 1
+    extra = set(themes) - {OPAQUE_VARIANT, TRANSPARENT_VARIANT}
+    if extra:
+        print("FAIL: theme family ships unexpected variant(s): %s" % ", ".join(sorted(extra)))
         return 1
     for t in doc["themes"]:
         if t.get("appearance") != "dark":
@@ -584,63 +774,60 @@ def main():
     report = Report()
 
     print("checking %s" % args.theme)
-    print("  variants: %s" % ", ".join(sorted(themes)))
+    print("  variants: %s" % ", ".join(t["name"] for t in doc["themes"]))
     check_schema(doc, args.theme, args.schema, args.offline, report)
+    check_legacy_key(raw, report)
     check_alpha(themes, report)
-    check_translucency(themes, report)
+    check_transparency(themes, report)
+    check_substitutions(themes, report)
     check_contrast(themes, report)
     check_variants_identical(themes, report)
 
-    tr = themes[TRANSLUCENT_VARIANT]
-    alpha = parse_hex(tr["background"])[3]
-    print("  window: %s is %r at %d%% opacity on %d surfaces; %s is %r"
-          % (TRANSLUCENT_VARIANT, tr.get("window_background_appearance"),
-             round(alpha * 100), len(WINDOW_SURFACES), SOLID_VARIANT,
-             themes[SOLID_VARIANT].get("window_background_appearance")))
+    tr = themes[TRANSPARENT_VARIANT]
+    print("  %s: %s = %r" % (OPAQUE_VARIANT, APPEARANCE_KEY,
+                             themes[OPAQUE_VARIANT].get(APPEARANCE_KEY)))
+    print("  %s: %s = %r, one tinted pane (%s) under %d clear surfaces"
+          % (TRANSPARENT_VARIANT, APPEARANCE_KEY, tr.get(APPEARANCE_KEY), tr["background"],
+             sum(1 for v in TRANSPARENT_SURFACE_PLAN.values() if v == "#00000000")))
+    base_alpha = alpha_of(tr["background"])
+    for region, surface_key in COMPOSITE_REGIONS:
+        effective = 1 - (1 - base_alpha) * (1 - alpha_of(tr[surface_key]))
+        print("      %-8s region composites to %.1f%% opacity (band %.0f-%.0f%%); over a"
+              % (region, effective * 100, COMPOSITE_BAND[0] * 100, COMPOSITE_BAND[1] * 100))
+        for label, wallpaper in WALLPAPERS:
+            print("          %-9s wallpaper -> %s"
+                  % (label, flatten(tr[surface_key], flatten(tr["background"], wallpaper))))
+
+    print("  color substitutions in %s (%d of at most %d, same hue, color only):"
+          % (TRANSPARENT_VARIANT, len(TRANSPARENT_SUBSTITUTIONS), MAX_SUBSTITUTIONS))
+    for key, (was, now) in sorted(TRANSPARENT_SUBSTITUTIONS.items()):
+        print("      %-22s %s -> %s" % (key, was, now))
 
     # Exemptions are never silent.
     print("  exempt from the %.1f:1 text floor (verbatim upstream ANSI, %d slots):"
           % (TEXT_FLOOR, len(ANSI_CONTRAST_EXEMPT)))
     for key in sorted(ANSI_CONTRAST_EXEMPT):
-        value = themes[SOLID_VARIANT][key]
+        value = themes[OPAQUE_VARIANT][key]
         print("      %-30s %s  %.2f:1" % (key, value,
-                                          contrast(value, themes[SOLID_VARIANT]["terminal.background"])))
+                                          contrast(value, themes[OPAQUE_VARIANT]["terminal.background"])))
     print("      + 8 terminal.ansi.dim_* slots (dim by definition)")
     print("  exempt from the no-alpha rule in both variants (structural):")
     for key, value in sorted(STRUCTURAL_TRANSPARENT.items()):
         print("      %-30s %s" % (key, value))
     print("  de-emphasised tier at %.1f:1 rather than %.1f:1: %s"
           % (DIM_FLOOR, TEXT_FLOOR, ", ".join(sorted(DIM_KEYS | DIM_SYNTAX))))
+    print("  every floor is capped at %.1f:1 over a non-black wallpaper -- no dark theme"
+          % WALLPAPER_FLOOR)
+    print("      holds 4.5:1 when half the backdrop is somebody's desktop.")
     print("  border.variant is NOT alpha-allowlisted: it strokes Mermaid cluster/note")
     print("      borders, the fenced-code-block border and the h1/h2 underline.")
-
-    if report.advisories:
-        print()
-        print("  translucency advisories -- %s lets the desktop through, and no theme can"
-              % TRANSLUCENT_VARIANT)
-        print("  guarantee contrast against an arbitrary wallpaper. Every floor holds over a")
-        print("  dark desktop; over lighter ones these colors fall short. Grouped by color,")
-        print("  since one palette entry is reused across many keys:")
-        for desktop, _ in DESKTOP_ADVISORY:
-            hits = [a for a in report.advisories if a[0] == desktop]
-            if not hits:
-                continue
-            worst = {}
-            for _, what, value, ratio, floor in hits:
-                if value not in worst or ratio < worst[value][0]:
-                    worst[value] = (ratio, floor, what)
-            print("      %s: %d color(s) across %d key(s)" % (desktop, len(worst), len(hits)))
-            for value, (ratio, floor, what) in sorted(worst.items(), key=lambda kv: kv[1][0]):
-                print("          %-9s %.2f:1 (floor %.1f)  e.g. %s"
-                      % (value, ratio, floor, what))
-        print("      Use %s, or a dark wallpaper, if this matters to you." % SOLID_VARIANT)
 
     if report.failures:
         print()
         by_section = {}
         for section, message in report.failures:
             by_section.setdefault(section, []).append(message)
-        for section in ("schema", "alpha", "translucency", "contrast", "variants"):
+        for section in ("schema", "alpha", "transparency", "contrast", "variants"):
             for message in by_section.get(section, []):
                 print("FAIL [%s] %s" % (section, message))
         print("\n%d failure(s)" % len(report.failures))
@@ -649,8 +836,8 @@ def main():
     print()
     for note in report.notes:
         print("NOTE: %s" % note)
-    print("OK: schema, alpha policy, window translucency, contrast floors and variant "
-          "parity all pass.")
+    print("OK: schema, alpha policy, window transparency, contrast floors over black, "
+          "mid-gray and white wallpapers, and variant parity all pass.")
     return 0
 
 
