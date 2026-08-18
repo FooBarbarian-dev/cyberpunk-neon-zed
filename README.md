@@ -8,7 +8,7 @@ The family ships two dark variants:
 | Variant                      | Notes                                                                                                                                                    |
 | ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `Cyberpunk Neon`             | `"background.appearance": "opaque"`, every color fully opaque. The default.                                                                              |
-| `Cyberpunk Neon Transparent` | `"background.appearance": "transparent"`, the window tinted to 85% and the surfaces above it clear — your desktop is visible through the editor and the terminal. |
+| `Cyberpunk Neon Transparent` | `"background.appearance": "transparent"`, the window tinted to 88% with clear glass over the editor and the terminal — your desktop is visible through the code — while the docks (AI chat, project tree, git panel) sit on near-solid chrome so prose stays readable. |
 
 `background.appearance` is the key Zed actually reads
 ([`crates/settings_content/src/theme.rs:538`](https://github.com/zed-industries/zed/blob/main/crates/settings_content/src/theme.rs),
@@ -26,24 +26,40 @@ assembles it at runtime so a repo-wide grep for it stays clean.
 Alpha does not stack the way it looks like it should. `background` at 85% under
 `editor.background` at 85% composites to ~97.8% in the editor region — opacity
 with extra steps ([zed#55972](https://github.com/zed-industries/zed/issues/55972)).
-So the Transparent variant is **one tinted pane with clear glass above it**:
+So the Transparent variant is **one tinted pane with tiers above it**, each tier
+chosen by what kind of content it holds:
 
-- `background` = `#000b1ed9` carries the entire tint (85% navy).
-- Everything that overlaps it is `#00000000`: `editor.background`,
+- `background` = `#000b1ee0` carries the entire window tint (88% navy).
+- **Glass** (`#00000000`) over the showcase — code and terminal output are
+  high-contrast neon glyphs and survive the wallpaper: `editor.background`,
   `editor.gutter.background`, `tab_bar.background`, `tab.inactive_background`,
-  `panel.background`, `surface.background`, `terminal.background`,
-  `terminal.ansi.background`, `toolbar.background`.
-- Structure that must read as chrome and not as wallpaper keeps a light tint:
+  `terminal.background`, `terminal.ansi.background`, `toolbar.background`.
+- **Dock chrome** — `panel.background` = `#091833b3` (70% navy, ~96% composited).
+  Zed paints this behind every dock panel
+  ([`workspace/src/dock.rs`](https://github.com/zed-industries/zed/blob/main/crates/workspace/src/dock.rs)):
+  the agent (AI chat) panel, project tree, git panel, outline. Those are prose
+  and muted labels, which drown in wallpaper bleed long before code does, so the
+  docks read as near-solid chrome with a hint of desktop left. The AI chat's
+  message cards and input box paint `editor.background` (glass) *over* this
+  chrome, so they inherit the readable backdrop too.
+- **Structure** that must read as chrome and not as wallpaper keeps a light tint:
   `tab.active_background`, `status_bar.background`, `title_bar.background`,
-  `editor.subheader.background` at `#0918334d` (30%).
-- Surfaces that float *above* window content stay fully opaque —
-  `elevated_surface.background` (popovers, the completion menu),
+  `editor.subheader.background` at `#09183366` (40%).
+- **Grounded and floating surfaces stay fully opaque** —
+  `elevated_surface.background` (context menus, pickers, the completion menu),
+  `surface.background` (popover asides, keybinding hints),
   `panel.overlay_background`, `element.background`. Alpha there shows your code
   through menus rather than showing the desktop.
 
-The result: the editor and terminal regions composite to **85.1% opacity**, which
+The result: the editor and terminal regions composite to **87.8% opacity**, which
 the checker enforces to stay inside `[0.72, 0.90]` — below that floor text drowns
 in the wallpaper, above that ceiling the transparency isn't worth shipping.
+
+One consequence of the dock tier worth knowing: a terminal living in the
+**bottom dock** sits above the dock chrome and is therefore near-solid; a
+terminal in the **center pane** keeps the full 87.8% glass. If you want the
+see-through terminal, put it in the center (or lower the `panel.background`
+alpha — see below).
 
 Every color that paints a glyph or a stroke — foregrounds, all `syntax` colors,
 line numbers, cursors, the whole ANSI table — is opaque 6-digit hex in both
@@ -51,12 +67,22 @@ variants. Transparency lives in surfaces only.
 
 ### Tuning the transparency
 
-Edit the last two hex digits of `background` in `themes/cyberpunk-neon.json`
-(`cc` is 80%, `d9` is 85%, `e0` is 88%), update the matching entry in
-`TRANSPARENT_SURFACE_PLAN` in `scripts/check_theme.py`, and re-run the checker: it
-enforces the plan value by value, re-derives the region opacity, and re-measures
-every contrast floor against the new composite. Do not spread the alpha across the
-other surfaces — that is the bug this architecture exists to avoid.
+Two dials, both in `themes/cyberpunk-neon.json`, each mirrored by an entry in
+`TRANSPARENT_SURFACE_PLAN` in `scripts/check_theme.py`:
+
+- **How see-through the code is**: the last two hex digits of `background`
+  (`cc` is 80%, `d9` is 85%, `e0` is 88%).
+- **How solid the docks are**: the last two hex digits of `panel.background`
+  (`80` is 50%, `99` is 60%, `b3` is 70%). Lower it if you want more desktop
+  showing through the AI chat and the project tree, raise it if prose still
+  fights your wallpaper.
+
+Update the matching plan entry and re-run the checker: it enforces the plan value
+by value, re-derives the region opacity, and re-measures every contrast floor
+against the new composite. Do not try to create *transparency* by stacking alpha
+across the mid-surfaces (editor, tab bar, terminal) — alphas composite toward
+opaque, which is the bug this architecture exists to avoid; `background` alone
+decides how much desktop comes through the glass.
 
 To get frosted glass instead of a clear view, change the one word
 `"transparent"` to `"blurred"` (and the expected value in the checker's
@@ -74,10 +100,10 @@ family, color only, declared in `TRANSPARENT_SUBSTITUTIONS`:
 
 | Key                                  | Opaque    | Transparent | Why                                                                                              |
 | ------------------------------------ | --------- | ----------- | ------------------------------------------------------------------------------------------------ |
-| `syntax.comment`, `syntax.comment.doc` | `#005faf` | `#5c93c4`   | 2.08:1 → 4.11:1 over a white wallpaper; `#005faf` is legible on deep navy and nowhere else.       |
-| `border`                             | `#2b77e0` | `#4a9fe8`   | Table pipes, blockquote bar, horizontal rule and Mermaid flowchart arrowheads: 3.08:1 → 4.74:1.  |
-| `border.variant`                     | `#1c61c2` | `#2b77e0`   | Mermaid cluster/note strokes, fenced-code border, heading underline: 2.26:1 → 3.08:1.            |
-| `editor.invisible`                   | `#1c61c2` | `#2b77e0`   | Whitespace markers, same 2.26:1 → 3.08:1.                                                        |
+| `syntax.comment`, `syntax.comment.doc` | `#005faf` | `#5c93c4`   | 2.27:1 → 4.48:1 over a white wallpaper; `#005faf` is legible on deep navy and nowhere else.       |
+| `border`                             | `#2b77e0` | `#4a9fe8`   | Table pipes, blockquote bar, horizontal rule and Mermaid flowchart arrowheads: 3.36:1 → 5.17:1.  |
+| `border.variant`                     | `#1c61c2` | `#2b77e0`   | Mermaid cluster/note strokes, fenced-code border, heading underline: 2.47:1 → 3.36:1.            |
+| `editor.invisible`                   | `#1c61c2` | `#2b77e0`   | Whitespace markers, same 2.47:1 → 3.36:1.                                                        |
 
 Everything else is one shared palette.
 
