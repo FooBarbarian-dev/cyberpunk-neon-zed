@@ -54,19 +54,28 @@ composites to ~97.8% in the editor region, which is opacity with extra steps
 (zed-industries/zed#55972). So the Transparent variant is one tinted base pane
 with tiers above it, each tier chosen by what the surface holds:
 
-  glass       #00000000   the showcase: editor, gutter, tab bar, inactive tabs,
-                          terminal, toolbar. Code and terminal output are
-                          high-contrast neon glyphs; they survive the wallpaper.
-  dock chrome #091833b3   `panel.background` -- what the agent (AI chat) panel,
+  tinted glass #000b1e59  the showcase: editor, gutter, terminal. Code and
+                          terminal output are high-contrast neon glyphs and
+                          survive the wallpaper; the 35% navy tint exists
+                          because the agent (AI chat) panel paints its message
+                          cards and input box with `editor.background`
+                          (zed agent_ui .../thread_view.rs) -- fully clear
+                          glass makes those boxes vanish into the dock chrome.
+  clear glass  #00000000  tab bar, inactive tabs, toolbar -- chrome inside the
+                          code region that carries no prose.
+  dock chrome  #091833e6  `panel.background` -- what the agent (AI chat) panel,
                           project tree, git panel and outline sit on
                           (zed workspace/src/dock.rs paints it behind every dock
                           panel). Prose and muted labels do NOT survive
                           wallpaper bleed, so docks get a near-solid backdrop:
-                          70% navy over the 88% base composites to ~96%.
-  structure   #09183366   active tab, status bar, title bar, sticky header --
-                          chrome that must separate from wallpaper but carries
+                          90% navy over the 84% base composites to ~98%.
+  structure    #09183366  active tab, sticky header -- chrome in the code
+                          region that must separate from wallpaper but carries
                           only short strings.
-  grounded    opaque      `surface.background` (popover asides, keybinding
+  boundary     #091833cc  title bar and status bar -- they frame the window
+                          with project/branch names and diagnostics, so they
+                          sit heavier (~97% composited).
+  grounded     opaque     `surface.background` (popover asides, keybinding
                           hints), plus the floating tier that was always opaque:
                           `elevated_surface.background` (menus, pickers),
                           `panel.overlay_background`, `element.background`.
@@ -147,32 +156,42 @@ BACKGROUND_APPEARANCE = {
 # pane, clear glass over the code, a heavy tint on the docks (prose UI needs a
 # real backdrop), a light tint on the structural chrome. See the module docstring.
 TRANSPARENT_SURFACE_PLAN = {
-    # the one tinted pane -- the whole window's transparency lives here
-    "background": "#000b1ee0",
-    # clear glass: the showcase regions, code and terminal over the wallpaper
-    "editor.background": "#00000000",
-    "editor.gutter.background": "#00000000",
+    # the one tinted pane -- most of the window's transparency lives here
+    "background": "#000b1ed6",
+    # tinted glass: the showcase regions, code and terminal over the wallpaper.
+    # The 35% navy tint is NOT decoration: the agent (AI chat) panel paints its
+    # message cards, tool-call cards and the input box with `editor.background`
+    # (zed agent_ui/src/conversation_view/thread_view.rs), so a fully clear
+    # #00000000 here makes every box in the agent thread vanish into the dock
+    # chrome behind it. 35% over the 84% base keeps the code region at 89.5%
+    # while giving those cards a visible fill again.
+    "editor.background": "#000b1e59",
+    "editor.gutter.background": "#000b1e59",
+    "terminal.ansi.background": "#000b1e59",
+    "terminal.background": "#000b1e59",
+    # clear glass: chrome inside the code region that carries no prose
     "tab.inactive_background": "#00000000",
     "tab_bar.background": "#00000000",
-    "terminal.ansi.background": "#00000000",
-    "terminal.background": "#00000000",
     "toolbar.background": "#00000000",
     # dock chrome: every dock panel -- the agent (AI chat) panel, project tree,
     # git panel, outline -- is dense prose over `panel.background`
     # (zed workspace/src/dock.rs paints it behind the active panel), and prose
-    # drowns in wallpaper bleed long before code does. 70% navy over the 88%
-    # base composites to ~96%: readable chrome, a hint of desktop left.
-    "panel.background": "#091833b3",
+    # drowns in wallpaper bleed long before code does. 90% navy over the 84%
+    # base composites to ~98%: near-solid chrome the chat can actually sit on.
+    "panel.background": "#091833e6",
     # grounded surfaces: popover asides, keybinding hints, small cards
     # (ui/src/components/popover.rs, keybinding_hint.rs). Opaque like the
     # floating tier -- alpha here puts wallpaper behind menu-adjacent text.
     "surface.background": "#091833",
-    # structure: a light tint so these read as chrome and not as wallpaper
+    # structure inside the code region: a light tint so these read as chrome
     "editor.subheader.background": "#09183366",
-    "status_bar.background": "#09183366",
     "tab.active_background": "#09183366",
-    "title_bar.background": "#09183366",
-    "title_bar.inactive_background": "#06142866",
+    # boundary chrome: the title bar and status bar frame the window and carry
+    # project names, branch names and diagnostics -- prose-adjacent strings that
+    # need a real backdrop, so they sit at 80% (~97% composited).
+    "status_bar.background": "#091833cc",
+    "title_bar.background": "#091833cc",
+    "title_bar.inactive_background": "#061428cc",
 }
 
 # Regions whose composite opacity is what a user actually perceives as "how
