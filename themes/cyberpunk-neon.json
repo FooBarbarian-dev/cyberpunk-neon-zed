@@ -46,7 +46,7 @@
         "editor.highlighted_line.background": "#07152f",
         "editor.hover_line_number": "#0abdc6",
         "editor.indent_guide": "#0e2a52",
-        "editor.indent_guide_active": "#1c61c2",
+        "editor.indent_guide_active": "#0a7f88",
         "editor.invisible": "#1c61c2",
         "editor.line_number": "#5c93c4",
         "editor.subheader.background": "#091833",
@@ -96,11 +96,11 @@
         "panel.background": "#091833",
         "panel.focused_border": "#ea00d9",
         "panel.indent_guide": "#133e7c",
-        "panel.indent_guide_active": "#1c61c2",
+        "panel.indent_guide_active": "#0a7f88",
         "panel.indent_guide_hover": "#1c61c2",
         "panel.overlay_background": "#091833",
         "panel.overlay_hover": "#0f2f61",
-        "predictive": "#5c93c4",
+        "predictive": "#9d8fd6",
         "predictive.background": "#0d1e35",
         "predictive.border": "#254160",
         "renamed": "#0abdc6",
@@ -396,7 +396,7 @@
             "font_style": "italic"
           },
           "predictive": {
-            "color": "#5c93c4",
+            "color": "#9d8fd6",
             "font_style": "italic"
           },
           "diff.plus": {
@@ -451,7 +451,7 @@
         "editor.highlighted_line.background": "#091833cc",
         "editor.hover_line_number": "#0abdc6",
         "editor.indent_guide": "#0e2a52",
-        "editor.indent_guide_active": "#1c61c2",
+        "editor.indent_guide_active": "#0a7f88",
         "editor.invisible": "#2b77e0",
         "editor.line_number": "#5c93c4",
         "editor.subheader.background": "#09183366",
@@ -501,11 +501,11 @@
         "panel.background": "#091833e6",
         "panel.focused_border": "#ea00d9",
         "panel.indent_guide": "#133e7c",
-        "panel.indent_guide_active": "#1c61c2",
+        "panel.indent_guide_active": "#0a7f88",
         "panel.indent_guide_hover": "#1c61c2",
         "panel.overlay_background": "#091833",
         "panel.overlay_hover": "#0f2f61",
-        "predictive": "#5c93c4",
+        "predictive": "#9d8fd6",
         "predictive.background": "#0d1e35",
         "predictive.border": "#254160",
         "renamed": "#0abdc6",
@@ -801,7 +801,7 @@
             "font_style": "italic"
           },
           "predictive": {
-            "color": "#5c93c4",
+            "color": "#9d8fd6",
             "font_style": "italic"
           },
           "diff.plus": {

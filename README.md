@@ -144,6 +144,37 @@ The checker holds them to an alpha band (`GLYPH_OVERLAY_ALPHA_BAND`) — below i
 the highlight disappears, above it the glyphs drown — and measures `text`
 *through* each wash against the usual contrast floors.
 
+## The semantic color map
+
+The chrome is deliberately navy — that restraint *is* the Cyberpunk Neon
+identity — and every accent hue carries one meaning, so color is information
+rather than decoration:
+
+| Hue                            | Meaning                                                                                                                            |
+| ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------- |
+| **Cyan** `#0abdc6`             | content and *you are here*: body text, icons, the active line number, the active indent guide (`#0a7f88`), info, selection washes   |
+| **Magenta** `#ea00d9`          | focus and emphasis: focused/selected borders, keywords, functions, search matches, conflicts, drop targets                          |
+| **Orange** `#f57800`           | attention: warnings, modified files, the active search match, link hover, the debugger, strings/constants                           |
+| **Green** `#00ff00`            | added / created / insert mode                                                                                                       |
+| **Red** `#ff0000`              | deleted / errors / replace mode                                                                                                     |
+| **Violet** `#b854de`/`#9d8fd6` | the speculative tier: variables and namespaces, and — dimmed — AI edit predictions (`predictive`)                                   |
+| **Steel blue** `#5c93c4`       | de-emphasis: comments (Transparent), hidden/ignored files, placeholders, tooling inlay `hint`s                                      |
+
+Two distinctions in that table exist specifically to carry information that
+identical colors were hiding:
+
+- **`hint` vs `predictive`** — inlay hints from tooling stay steel blue, while
+  AI edit predictions render dim violet `#9d8fd6`. Both are ghost text in the
+  buffer; the hue is the only way to tell what a compiler says from what a
+  model guesses.
+- **Active indent guides** (`editor.indent_guide_active`,
+  `panel.indent_guide_active`) are dim cyan `#0a7f88` rather than generic
+  blue, extending the *you-are-here* rule the active line number already
+  follows.
+
+When adding a color, extend this table first — a hue that means nothing should
+stay navy.
+
 ## Installation
 
 ### From the extension store
