@@ -8,7 +8,7 @@ The family ships two dark variants:
 | Variant                      | Notes                                                                                                                                                    |
 | ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `Cyberpunk Neon`             | `"background.appearance": "opaque"`, every color fully opaque. The default.                                                                              |
-| `Cyberpunk Neon Transparent` | `"background.appearance": "transparent"`, the window tinted to 88% with clear glass over the editor and the terminal — your desktop is visible through the code — while the docks (AI chat, project tree, git panel) sit on near-solid chrome so prose stays readable. |
+| `Cyberpunk Neon Transparent` | `"background.appearance": "transparent"`, the code and terminal regions composite to 89.5% — your desktop is visible through the code — while the docks (AI chat, project tree, git panel) and the title/status bars sit on near-solid chrome so prose stays readable, and the AI chat's message boxes keep a visible fill. |
 
 `background.appearance` is the key Zed actually reads
 ([`crates/settings_content/src/theme.rs:538`](https://github.com/zed-industries/zed/blob/main/crates/settings_content/src/theme.rs),
@@ -29,35 +29,42 @@ with extra steps ([zed#55972](https://github.com/zed-industries/zed/issues/55972
 So the Transparent variant is **one tinted pane with tiers above it**, each tier
 chosen by what kind of content it holds:
 
-- `background` = `#000b1ee0` carries the entire window tint (88% navy).
-- **Glass** (`#00000000`) over the showcase — code and terminal output are
-  high-contrast neon glyphs and survive the wallpaper: `editor.background`,
-  `editor.gutter.background`, `tab_bar.background`, `tab.inactive_background`,
-  `terminal.background`, `terminal.ansi.background`, `toolbar.background`.
-- **Dock chrome** — `panel.background` = `#091833b3` (70% navy, ~96% composited).
+- `background` = `#000b1ed6` carries most of the window tint (84% navy).
+- **Tinted glass** (`#000b1e59`, 35% navy) over the showcase — code and terminal
+  output are high-contrast neon glyphs and survive the wallpaper:
+  `editor.background`, `editor.gutter.background`, `terminal.background`,
+  `terminal.ansi.background`. The tint is not decoration: the AI chat's message
+  cards, tool-call cards and input box are painted with `editor.background`
+  ([`agent_ui/.../thread_view.rs`](https://github.com/zed-industries/zed/blob/main/crates/agent_ui/src/conversation_view/thread_view.rs)),
+  so fully clear glass there makes every box in the agent thread vanish into
+  the dock chrome behind it. 35% over the 84% base keeps the code region at
+  89.5% while giving those boxes a visible fill again.
+- **Clear glass** (`#00000000`) on chrome inside the code region that carries no
+  prose: `tab_bar.background`, `tab.inactive_background`, `toolbar.background`.
+- **Dock chrome** — `panel.background` = `#091833e6` (90% navy, ~98% composited).
   Zed paints this behind every dock panel
   ([`workspace/src/dock.rs`](https://github.com/zed-industries/zed/blob/main/crates/workspace/src/dock.rs)):
   the agent (AI chat) panel, project tree, git panel, outline. Those are prose
   and muted labels, which drown in wallpaper bleed long before code does, so the
-  docks read as near-solid chrome with a hint of desktop left. The AI chat's
-  message cards and input box paint `editor.background` (glass) *over* this
-  chrome, so they inherit the readable backdrop too.
-- **Structure** that must read as chrome and not as wallpaper keeps a light tint:
-  `tab.active_background`, `status_bar.background`, `title_bar.background`,
-  `editor.subheader.background` at `#09183366` (40%).
+  docks read as near-solid chrome.
+- **Structure** inside the code region keeps a light tint:
+  `tab.active_background`, `editor.subheader.background` at `#09183366` (40%).
+- **Boundary chrome** — `title_bar.background`, `status_bar.background` at
+  `#091833cc` (80%, ~97% composited). They frame the window with project and
+  branch names and diagnostics, so they sit heavier than in-region structure.
 - **Grounded and floating surfaces stay fully opaque** —
   `elevated_surface.background` (context menus, pickers, the completion menu),
   `surface.background` (popover asides, keybinding hints),
   `panel.overlay_background`, `element.background`. Alpha there shows your code
   through menus rather than showing the desktop.
 
-The result: the editor and terminal regions composite to **87.8% opacity**, which
+The result: the editor and terminal regions composite to **89.5% opacity**, which
 the checker enforces to stay inside `[0.72, 0.90]` — below that floor text drowns
 in the wallpaper, above that ceiling the transparency isn't worth shipping.
 
 One consequence of the dock tier worth knowing: a terminal living in the
 **bottom dock** sits above the dock chrome and is therefore near-solid; a
-terminal in the **center pane** keeps the full 87.8% glass. If you want the
+terminal in the **center pane** keeps the 89.5% glass. If you want the
 see-through terminal, put it in the center (or lower the `panel.background`
 alpha — see below).
 
@@ -67,13 +74,18 @@ variants. Transparency lives in surfaces only.
 
 ### Tuning the transparency
 
-Two dials, both in `themes/cyberpunk-neon.json`, each mirrored by an entry in
+Three dials, all in `themes/cyberpunk-neon.json`, each mirrored by an entry in
 `TRANSPARENT_SURFACE_PLAN` in `scripts/check_theme.py`:
 
 - **How see-through the code is**: the last two hex digits of `background`
-  (`cc` is 80%, `d9` is 85%, `e0` is 88%).
+  (`cc` is 80%, `d6` is 84%, `e0` is 88%).
+- **How visible the AI chat's boxes are**: the last two hex digits of
+  `editor.background` (and its three siblings — gutter and the two terminal
+  keys). This is the fill of the agent thread's message cards and input box;
+  it also adds onto the code region's composite, so raising one usually means
+  lowering the other to stay inside the `[0.72, 0.90]` band.
 - **How solid the docks are**: the last two hex digits of `panel.background`
-  (`80` is 50%, `99` is 60%, `b3` is 70%). Lower it if you want more desktop
+  (`b3` is 70%, `cc` is 80%, `e6` is 90%). Lower it if you want more desktop
   showing through the AI chat and the project tree, raise it if prose still
   fights your wallpaper.
 
@@ -106,6 +118,62 @@ family, color only, declared in `TRANSPARENT_SUBSTITUTIONS`:
 | `editor.invisible`                   | `#1c61c2` | `#2b77e0`   | Whitespace markers, same 2.47:1 → 3.36:1.                                                        |
 
 Everything else is one shared palette.
+
+### The three highlight colors that must carry alpha
+
+Zed's rendered-markdown element — chat replies in the agent (AI chat) panel,
+hover documentation, notifications — paints its highlight quads **after** the
+glyphs ([`crates/markdown/src/markdown.rs`](https://github.com/zed-industries/zed/blob/main/crates/markdown/src/markdown.rs),
+`Element::paint` runs `text.paint()` first and `paint_highlights()` on top of
+it; the selection color comes from `element.selection_background` and search
+matches from the two `search.*_background` keys). A fully opaque highlight
+there is a redaction bar: select a chat reply and the quad covers the very
+words it highlights. The same three keys paint *under* the glyphs in the code
+editor, where alpha simply composites against the canvas.
+
+So these three keys carry alpha **in both variants** — the one deliberate
+exception to "the opaque variant is fully opaque":
+
+| Key                              | Value       | Flattened on the editor canvas                            |
+| -------------------------------- | ----------- | --------------------------------------------------------- |
+| `element.selection_background`   | `#0abdc63d` | `#023646` — matches the editor's own selection (`#023848`) |
+| `search.match_background`        | `#ea00d94d` | `#470856` — the magenta this theme always used             |
+| `search.active_match_background` | `#f5780059` | `#563114` — the active-match orange                        |
+
+The checker holds them to an alpha band (`GLYPH_OVERLAY_ALPHA_BAND`) — below it
+the highlight disappears, above it the glyphs drown — and measures `text`
+*through* each wash against the usual contrast floors.
+
+## The semantic color map
+
+The chrome is deliberately navy — that restraint *is* the Cyberpunk Neon
+identity — and every accent hue carries one meaning, so color is information
+rather than decoration:
+
+| Hue                            | Meaning                                                                                                                            |
+| ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------- |
+| **Cyan** `#0abdc6`             | content and *you are here*: body text, icons, the active line number, the active indent guide (`#0a7f88`), info, selection washes   |
+| **Magenta** `#ea00d9`          | focus and emphasis: focused/selected borders, keywords, functions, search matches, conflicts, drop targets                          |
+| **Orange** `#f57800`           | attention: warnings, modified files, the active search match, link hover, the debugger, strings/constants                           |
+| **Green** `#00ff00`            | added / created / insert mode                                                                                                       |
+| **Red** `#ff0000`              | deleted / errors / replace mode                                                                                                     |
+| **Violet** `#b854de`/`#9d8fd6` | the speculative tier: variables and namespaces, and — dimmed — AI edit predictions (`predictive`)                                   |
+| **Steel blue** `#5c93c4`       | de-emphasis: comments (Transparent), hidden/ignored files, placeholders, tooling inlay `hint`s                                      |
+
+Two distinctions in that table exist specifically to carry information that
+identical colors were hiding:
+
+- **`hint` vs `predictive`** — inlay hints from tooling stay steel blue, while
+  AI edit predictions render dim violet `#9d8fd6`. Both are ghost text in the
+  buffer; the hue is the only way to tell what a compiler says from what a
+  model guesses.
+- **Active indent guides** (`editor.indent_guide_active`,
+  `panel.indent_guide_active`) are dim cyan `#0a7f88` rather than generic
+  blue, extending the *you-are-here* rule the active line number already
+  follows.
+
+When adding a color, extend this table first — a hue that means nothing should
+stay navy.
 
 ## Installation
 
@@ -171,8 +239,10 @@ python3 scripts/check_theme.py themes/cyberpunk-neon.json
 - **Surface plan**: the Transparent variant's window surfaces must match
   `TRANSPARENT_SURFACE_PLAN` value by value, and the editor and terminal regions
   must composite to an opacity inside `[0.72, 0.90]`.
-- **Alpha policy**: which keys may carry alpha, none at all in the opaque variant,
-  and nothing that paints a glyph or a stroke in either.
+- **Alpha policy**: which keys may carry alpha, none in the opaque variant except
+  the three glyph-overlay highlights (which rendered markdown paints *over* the
+  text, so they must carry alpha in both variants), and nothing that paints a
+  glyph or a stroke in either.
 - **Contrast**: WCAG floors for both variants. The opaque variant is measured
   against its own surfaces; the Transparent variant is measured against the real
   composite — `wallpaper ⊕ background ⊕ surface`, src-over — over a **black**, a
