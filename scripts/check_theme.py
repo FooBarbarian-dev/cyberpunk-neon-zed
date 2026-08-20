@@ -9,7 +9,9 @@ Usage:
 Checks
   (a) JSON Schema validation against the theme's own `$schema` URL.
   (b) Alpha policy: no alpha-bearing hex outside the allowlist in the Transparent
-      variant, and none at all in the opaque variant.
+      variant, and none in the opaque variant except the three glyph-overlay
+      highlights (GLYPH_OVERLAYS), which rendered markdown paints OVER the text
+      and which therefore must carry alpha in BOTH variants.
   (c) Contrast floors, WCAG relative luminance, RGBA composited over the backdrop.
       In the Transparent variant the backdrop is a stack -- wallpaper, then the
       window tint, then the surface -- so every floor is measured against the real
@@ -211,7 +213,6 @@ ALPHA_ALLOWLIST = set(TRANSPARENT_SURFACE_PLAN) | {
     "editor.highlighted_line.background",
     "editor.document_highlight.read_background",
     "editor.document_highlight.write_background",
-    "search.match_background",
     "element.hover",
     "element.active",
     "element.selected",
@@ -234,6 +235,21 @@ DENIED_FROM_BRIEF_ALLOWLIST = {"border.variant"}
 # A border that exists to reserve layout space without painting. Any opaque value
 # makes it paint, so it is exempt from the "no 8-digit hex" rule in both variants.
 STRUCTURAL_TRANSPARENT = {"border.transparent": "#00000000"}
+
+# Highlight quads that rendered markdown -- chat replies in the agent (AI chat)
+# panel, hover documentation, notifications -- paints OVER the glyphs:
+# markdown.rs's Element::paint runs text.paint() first and paint_highlights()
+# after it (the selection color is element_selection_background, markdown.rs:231;
+# search matches use search_match_background / search_active_match_background).
+# An opaque value here is a redaction bar over the very text it highlights. The
+# same keys paint UNDER the glyphs in the code editor, where alpha simply
+# composites against the canvas. So these keys must carry alpha in BOTH variants
+# -- the one place the opaque variant's no-alpha rule deliberately inverts --
+# inside a band: below it the highlight disappears, above it the glyphs drown.
+# check_contrast additionally measures `text` THROUGH each wash.
+GLYPH_OVERLAYS = {"element.selection_background", "search.match_background",
+                  "search.active_match_background"}
+GLYPH_OVERLAY_ALPHA_BAND = (0.15, 0.45)
 
 # The upstream ANSI table is a 16-slot protocol palette addressed by index, not
 # theme text. These slots are reproduced verbatim from Roboron3042/Cyberpunk-Neon
@@ -537,9 +553,24 @@ def check_alpha(themes, report):
                 report.fail("alpha", "%s: %s = %r is not a valid Zed color "
                                      "(#rgb, #rgba, #rrggbb, #rrggbbaa)" % (name, key, value))
                 continue
+            norm = normalize(key)
+            if norm in GLYPH_OVERLAYS:
+                lo, hi = GLYPH_OVERLAY_ALPHA_BAND
+                if not has_alpha(value):
+                    report.fail("alpha", "%s: %s = %s is opaque, but rendered markdown "
+                                         "paints it OVER the glyphs (markdown.rs paints "
+                                         "text first, then the highlight quads), so an "
+                                         "opaque value redacts the text it highlights; "
+                                         "it must carry alpha in [%.2f, %.2f]"
+                                % (name, key, value, lo, hi))
+                elif not lo <= alpha_of(value) <= hi:
+                    report.fail("alpha", "%s: %s = %s has alpha %.2f outside [%.2f, %.2f] "
+                                         "-- below the band the highlight disappears, "
+                                         "above it the glyphs under the wash drown"
+                                % (name, key, value, alpha_of(value), lo, hi))
+                continue
             if not has_alpha(value):
                 continue
-            norm = normalize(key)
             if norm in STRUCTURAL_TRANSPARENT:
                 expected = STRUCTURAL_TRANSPARENT[norm]
                 if value.lower() != expected:
@@ -638,6 +669,21 @@ def check_contrast(themes, report):
                 if ratio < floor:
                     report.fail("contrast", "%s: inline code on %s (%s) is %.2f:1, floor "
                                             "is %.1f:1" % (name, description, span_bg, ratio, floor))
+
+        # Rendered markdown paints the selection and search-match quads OVER the
+        # glyphs (see GLYPH_OVERLAYS), so highlighted text is read THROUGH the
+        # wash: measure `text` against overlay (+) editor canvas.
+        for overlay_key in sorted(GLYPH_OVERLAYS):
+            overlay = style[overlay_key]
+            for _wallpaper, description, opaque_bg, cap in backdrops(name, style,
+                                                                     "editor.background"):
+                washed = flatten(overlay, opaque_bg)
+                floor = min(TEXT_FLOOR, cap) if cap is not None else TEXT_FLOOR
+                ratio = contrast(text, washed)
+                if ratio < floor:
+                    report.fail("contrast", "%s: text through the %s wash on %s (%s) is "
+                                            "%.2f:1, floor is %.1f:1"
+                                % (name, overlay_key, description, washed, ratio, floor))
 
 
 def check_transparency(themes, report):
@@ -837,6 +883,15 @@ def main():
     print("  exempt from the no-alpha rule in both variants (structural):")
     for key, value in sorted(STRUCTURAL_TRANSPARENT.items()):
         print("      %-30s %s" % (key, value))
+    print("  glyph overlays -- rendered markdown paints these OVER the text, so alpha")
+    print("      is required in both variants (band %.2f-%.2f), text measured through"
+          % GLYPH_OVERLAY_ALPHA_BAND)
+    print("      the wash:")
+    for key in sorted(GLYPH_OVERLAYS):
+        value = themes[OPAQUE_VARIANT][key]
+        washed = flatten(value, themes[OPAQUE_VARIANT]["editor.background"])
+        print("      %-30s %s  -> %s on the editor canvas, text %.2f:1"
+              % (key, value, washed, contrast(themes[OPAQUE_VARIANT]["text"], washed)))
     print("  de-emphasised tier at %.1f:1 rather than %.1f:1: %s"
           % (DIM_FLOOR, TEXT_FLOOR, ", ".join(sorted(DIM_KEYS | DIM_SYNTAX))))
     print("  every floor is capped at %.1f:1 over a non-black wallpaper -- no dark theme"

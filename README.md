@@ -107,6 +107,31 @@ family, color only, declared in `TRANSPARENT_SUBSTITUTIONS`:
 
 Everything else is one shared palette.
 
+### The three highlight colors that must carry alpha
+
+Zed's rendered-markdown element — chat replies in the agent (AI chat) panel,
+hover documentation, notifications — paints its highlight quads **after** the
+glyphs ([`crates/markdown/src/markdown.rs`](https://github.com/zed-industries/zed/blob/main/crates/markdown/src/markdown.rs),
+`Element::paint` runs `text.paint()` first and `paint_highlights()` on top of
+it; the selection color comes from `element.selection_background` and search
+matches from the two `search.*_background` keys). A fully opaque highlight
+there is a redaction bar: select a chat reply and the quad covers the very
+words it highlights. The same three keys paint *under* the glyphs in the code
+editor, where alpha simply composites against the canvas.
+
+So these three keys carry alpha **in both variants** — the one deliberate
+exception to "the opaque variant is fully opaque":
+
+| Key                              | Value       | Flattened on the editor canvas                            |
+| -------------------------------- | ----------- | --------------------------------------------------------- |
+| `element.selection_background`   | `#0abdc63d` | `#023646` — matches the editor's own selection (`#023848`) |
+| `search.match_background`        | `#ea00d94d` | `#470856` — the magenta this theme always used             |
+| `search.active_match_background` | `#f5780059` | `#563114` — the active-match orange                        |
+
+The checker holds them to an alpha band (`GLYPH_OVERLAY_ALPHA_BAND`) — below it
+the highlight disappears, above it the glyphs drown — and measures `text`
+*through* each wash against the usual contrast floors.
+
 ## Installation
 
 ### From the extension store
@@ -171,8 +196,10 @@ python3 scripts/check_theme.py themes/cyberpunk-neon.json
 - **Surface plan**: the Transparent variant's window surfaces must match
   `TRANSPARENT_SURFACE_PLAN` value by value, and the editor and terminal regions
   must composite to an opacity inside `[0.72, 0.90]`.
-- **Alpha policy**: which keys may carry alpha, none at all in the opaque variant,
-  and nothing that paints a glyph or a stroke in either.
+- **Alpha policy**: which keys may carry alpha, none in the opaque variant except
+  the three glyph-overlay highlights (which rendered markdown paints *over* the
+  text, so they must carry alpha in both variants), and nothing that paints a
+  glyph or a stroke in either.
 - **Contrast**: WCAG floors for both variants. The opaque variant is measured
   against its own surfaces; the Transparent variant is measured against the real
   composite — `wallpaper ⊕ background ⊕ surface`, src-over — over a **black**, a
